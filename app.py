@@ -1,8 +1,13 @@
-from flask import Flask, render_template
+import os
+import re
+
+from flask import Flask, redirect, render_template, request, session, url_for
+from werkzeug.security import generate_password_hash
 
 from database.db import get_db, init_db, seed_db
 
 app = Flask(__name__)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 
 with app.app_context():
     init_db()
@@ -18,9 +23,52 @@ def landing():
     return render_template("landing.html")
 
 
-@app.route("/register")
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+@app.route("/register", methods=["GET", "POST"])
 def register():
-    return render_template("register.html")
+    if request.method == "GET":
+        return render_template("register.html")
+
+    name = request.form.get("name", "")
+    email = request.form.get("email", "")
+    password = request.form.get("password", "")
+
+    name_clean = name.strip()
+    email_clean = email.strip().lower()
+
+    if not name_clean or not email_clean or not password:
+        return render_template("register.html", error="All fields are required.",
+                                name=name_clean, email=email_clean), 400
+
+    if not EMAIL_RE.match(email_clean):
+        return render_template("register.html", error="Please enter a valid email address.",
+                                name=name_clean, email=email_clean), 400
+
+    if len(password) < 8:
+        return render_template("register.html", error="Password must be at least 8 characters.",
+                                name=name_clean, email=email_clean), 400
+
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email_clean,)).fetchone()
+        if existing is not None:
+            return render_template("register.html", error="An account with that email already exists.",
+                                    name=name_clean, email=email_clean), 400
+
+        password_hash = generate_password_hash(password)
+        cursor = conn.execute(
+            "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
+            (name_clean, email_clean, password_hash),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+    finally:
+        conn.close()
+
+    session["user_id"] = user_id
+    return redirect(url_for("profile"))
 
 
 @app.route("/login")
